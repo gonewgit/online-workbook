@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
 
-// ---------- 채점 호출 ----------
+type Problem = {
+  id: number;
+  chapter_id: number;
+  type: string;          // 'short' | 'essay' | 'mcq' ...
+  body: string;
+  grading_mode?: string; // 'short' | 'essay' | 'numeric' | 'mcq'
+};
+
+type GradeRes = { score: number; feedback?: string };
+
 async function grade(problemId: number, answer: string) {
   const res = await fetch("/api/grade", {
     method: "POST",
@@ -11,26 +20,29 @@ async function grade(problemId: number, answer: string) {
     body: JSON.stringify({ problemId, answer }),
   });
   if (!res.ok) throw new Error("grading failed");
-  return res.json() as Promise<{ score: number; feedback?: string }>;
+  return (await res.json()) as GradeRes;
 }
 
 export default function Home() {
-  // 로그인/수강권 상태
-  const [loading, setLoading] = useState(true);
+  // 로그인/권한
+  const [loadingAuth, setLoadingAuth] = useState(true);
   const [isAuthed, setIsAuthed] = useState(false);
-  const [isEntitled, setIsEntitled] = useState<boolean | null>(null); // null=확인 전
+  const [isEntitled, setIsEntitled] = useState<boolean | null>(null);
 
-  // Q1
-  const [q1, setQ1] = useState<string>("");
-  const [q1Res, setQ1Res] = useState<{ score: number; feedback?: string }>();
-  const [q1Busy, setQ1Busy] = useState(false);
+  // 문제
+  const [problems, setProblems] = useState<Problem[]>([]);
+  const [loadingProblems, setLoadingProblems] = useState(true);
 
-  // Q2
-  const [q2, setQ2] = useState<string>("");
-  const [q2Res, setQ2Res] = useState<{ score: number; feedback?: string }>();
-  const [q2Busy, setQ2Busy] = useState(false);
+  // 답안/결과 상태
+  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [grading, setGrading] = useState<Record<number, boolean>>({});
+  const [results, setResults] = useState<Record<number, GradeRes>>({});
 
-  // 로그인/수강권 확인
+  // 현재 뷰 인덱스(스냅 섹션 관찰)
+  const [activeIdx, setActiveIdx] = useState(0);
+  const sectionRefs = useRef<(HTMLElement | null)[]>([]);
+
+  // -------------- 로그인 & 수강권 확인 --------------
   useEffect(() => {
     const sb = supabaseBrowser();
 
@@ -40,7 +52,6 @@ export default function Home() {
       setIsAuthed(authed);
 
       if (authed) {
-        // RLS가 적용되어 있으므로 본인 수강권만 보입니다.
         const { data: ent, error } = await sb
           .from("entitlements")
           .select("user_id")
@@ -50,45 +61,55 @@ export default function Home() {
       } else {
         setIsEntitled(null);
       }
-
-      setLoading(false);
+      setLoadingAuth(false);
     })();
 
     const { data: sub } = sb.auth.onAuthStateChange((_e, session) => {
-      setIsAuthed(!!session);
-      if (!session) {
-        setIsEntitled(null);
-      }
+      const A = !!session;
+      setIsAuthed(A);
+      if (!A) setIsEntitled(null);
     });
-    return () => {
-      sub.subscription.unsubscribe();
-    };
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  const submitQ1 = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setQ1Busy(true);
-    try {
-      const r = await grade(1, q1 || "");
-      setQ1Res(r);
-    } finally {
-      setQ1Busy(false);
-    }
-  };
+  // -------------- 문제 불러오기 --------------
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setLoadingProblems(true);
+        const res = await fetch("/api/problems?chapter=1", { cache: "no-store" });
+        if (!res.ok) throw new Error("failed to load problems");
+        const data = (await res.json()) as Problem[];
+        setProblems(data);
+      } finally {
+        setLoadingProblems(false);
+      }
+    };
+    load();
+  }, []);
 
-  const submitQ2 = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setQ2Busy(true);
-    try {
-      const r = await grade(2, q2 || "");
-      setQ2Res(r);
-    } finally {
-      setQ2Busy(false);
-    }
-  };
+  // -------------- 인터섹션으로 현재 섹션 감지 --------------
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // 가장 많이 보이는 섹션을 active로
+        const vis = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        if (vis[0]) {
+          const idx = Number((vis[0].target as HTMLElement).dataset.index || "0");
+          setActiveIdx(idx);
+        }
+      },
+      { threshold: [0.25, 0.5, 0.75, 0.9] }
+    );
+
+    sectionRefs.current.forEach((el) => el && observer.observe(el));
+    return () => observer.disconnect();
+  }, [problems.length]);
 
   const TopRight = () => (
-    <div style={{ position: "fixed", top: 12, right: 12 }}>
+    <div style={{ position: "fixed", top: 12, right: 12, zIndex: 50 }}>
       {isAuthed ? (
         <a
           href="#"
@@ -106,8 +127,8 @@ export default function Home() {
     </div>
   );
 
-  // 상태별 화면 분기
-  if (loading) {
+  // ------------ 상태별 가림막 ------------
+  if (loadingAuth) {
     return (
       <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
         <TopRight />
@@ -115,7 +136,6 @@ export default function Home() {
       </main>
     );
   }
-
   if (!isAuthed) {
     return (
       <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
@@ -130,7 +150,6 @@ export default function Home() {
       </main>
     );
   }
-
   if (isEntitled === false) {
     return (
       <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
@@ -139,88 +158,174 @@ export default function Home() {
         <p style={{ marginTop: 12 }}>
           현재 계정에는 <b>Chapter 1</b>에 대한 수강권이 없습니다.
         </p>
-        <p style={{ marginTop: 8 }}>
-          결제 후 자동으로 권한이 부여됩니다. (테스트용으로는 관리자에서 부여 가능)
-        </p>
+        <p style={{ marginTop: 8 }}>결제 후 자동으로 권한이 부여됩니다.</p>
       </main>
     );
   }
 
-  // 로그인 + 수강권 OK → 문제 표시
-  return (
-    <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
-      <TopRight />
-      <h1 style={{ fontSize: 40, fontWeight: 800 }}>온라인 실습 교재 — 샘플</h1>
-      <p style={{ marginBottom: 24 }}>Chapter 1의 샘플 문제 2개로 동작 확인</p>
+  // ------------ 문제 카드 렌더 ------------
+  const onSubmit = async (e: React.FormEvent, p: Problem) => {
+    e.preventDefault();
+    const ans = answers[p.id] ?? "";
+    setGrading((g) => ({ ...g, [p.id]: true }));
+    try {
+      const res = await grade(p.id, ans);
+      setResults((r) => ({ ...r, [p.id]: res }));
+    } finally {
+      setGrading((g) => ({ ...g, [p.id]: false }));
+    }
+  };
 
-      {/* Q1 */}
-      <section
-        style={{
-          border: "1px solid #666",
-          borderRadius: 8,
-          padding: 16,
-          marginBottom: 24,
-        }}
-      >
-        <h3>Q1. 샤논 용량 공식에서 용량 C의 단위는?</h3>
-        <form onSubmit={submitQ1}>
-          <div style={{ display: "grid", gap: 10, marginTop: 8, marginBottom: 12 }}>
-            {["A. bps", "B. Hz", "C. dB", "D. W"].map((label, i) => {
-              const val = String.fromCharCode(65 + i);
-              return (
-                <label key={val}>
-                  <input
-                    type="radio"
-                    name="q1"
-                    value={val}
-                    checked={q1 === val}
-                    onChange={(e) => setQ1(e.target.value)}
-                  />{" "}
-                  {label}
-                </label>
-              );
-            })}
+  // 스타일 헬퍼: 이전 카드의 희미도/그라데이션
+  const cardStyle = (idx: number): React.CSSProperties => {
+    // 현재보다 2개 이상 이전: 매우 희미
+    if (idx < activeIdx - 1) {
+      return {
+        opacity: 0.18,
+        filter: "grayscale(60%)",
+        transition: "opacity 200ms ease, filter 200ms ease",
+      };
+    }
+    // 바로 직전 카드: 옅게 + 그라데이션
+    if (idx === activeIdx - 1) {
+      return {
+        position: "relative",
+        opacity: 0.45,
+        filter: "grayscale(30%)",
+        transition: "opacity 200ms ease, filter 200ms ease",
+        // 아래에서 위로 희미해지는 느낌
+        // (오버레이는 섹션 컨테이너에 before로 추가하는 대신 배경그라데이션으로 표현)
+        background:
+          "linear-gradient(to bottom, rgba(255,255,255,0.0) 0%, rgba(255,255,255,0.7) 60%, rgba(255,255,255,0.9) 100%)",
+      };
+    }
+    // 현재/이후: 선명
+    return { opacity: 1, filter: "none", transition: "opacity 200ms ease" };
+  };
+
+  const inputFor = (p: Problem) => {
+    const mode = (p.grading_mode || p.type || "short").toLowerCase();
+    const val = answers[p.id] ?? "";
+    const set = (v: string) => setAnswers((a) => ({ ...a, [p.id]: v }));
+
+    if (mode === "essay") {
+      return (
+        <textarea
+          placeholder="서술형 답안을 입력하세요"
+          value={val}
+          onChange={(e) => set(e.target.value)}
+          style={{ width: "100%", minHeight: 140, padding: 12 }}
+        />
+      );
+    }
+    // 기본: 단답형
+    return (
+      <input
+        type="text"
+        placeholder="답안을 입력하세요"
+        value={val}
+        onChange={(e) => set(e.target.value)}
+        style={{ width: "100%", padding: 10 }}
+      />
+    );
+  };
+
+  const Sections = useMemo(
+    () =>
+      problems.map((p, i) => (
+        <section
+          key={p.id}
+          data-index={i}
+          ref={(el) => (sectionRefs.current[i] = el)}
+          style={{
+            scrollSnapAlign: "start",
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            padding: "48px 16px",
+          }}
+        >
+          <div
+            style={{
+              ...cardStyle(i),
+              maxWidth: 900,
+              width: "100%",
+              margin: "0 auto",
+              border: "1px solid #666",
+              borderRadius: 12,
+              padding: 20,
+              background: "white",
+              boxShadow: "0 6px 24px rgba(0,0,0,0.08)",
+            }}
+          >
+            <div style={{ marginBottom: 10, fontSize: 13, color: "#666" }}>
+              문제 {i + 1} / {problems.length} · ID {p.id}
+            </div>
+            <h3
+              style={{
+                fontSize: 20,
+                fontWeight: 700,
+                marginBottom: 12,
+                lineHeight: 1.35,
+              }}
+              dangerouslySetInnerHTML={{
+                __html: p.body.replace(/\n/g, "<br/>"),
+              }}
+            />
+            <form onSubmit={(e) => onSubmit(e, p)}>
+              <div style={{ margin: "8px 0 12px" }}>{inputFor(p)}</div>
+              <button disabled={!!grading[p.id]} type="submit" style={{ padding: "8px 12px" }}>
+                {grading[p.id] ? "채점 중..." : "제출"}
+              </button>
+            </form>
+            {results[p.id] && (
+              <p style={{ marginTop: 10 }}>
+                점수: {results[p.id].score} / 1{" "}
+                {results[p.id].feedback
+                  ? `— ${results[p.id].feedback}`
+                  : results[p.id].score
+                  ? "정답"
+                  : "오답"}
+              </p>
+            )}
           </div>
-          <button disabled={q1Busy} type="submit">
-            {q1Busy ? "채점 중..." : "제출"}
-          </button>
-        </form>
-        {q1Res && (
-          <p style={{ marginTop: 10 }}>
-            점수: {q1Res.score} / 1{" "}
-            {q1Res.feedback ? `— ${q1Res.feedback}` : q1Res.score ? "정답" : "오답"}
-          </p>
-        )}
-      </section>
+        </section>
+      )),
+    [problems, grading, results, activeIdx, answers]
+  );
 
-      {/* Q2 */}
-      <section
+  return (
+    <>
+      <TopRight />
+      <div
         style={{
-          border: "1px solid #666",
-          borderRadius: 8,
-          padding: 16,
+          height: "100vh",
+          overflowY: "auto",
+          scrollSnapType: "y mandatory",
+          background: "linear-gradient(180deg,#f8fafc 0%, #ffffff 30%)",
         }}
       >
-        <h3>Q2. π 값을 소수 둘째자리까지 반올림하여 입력하세요.</h3>
-        <form onSubmit={submitQ2}>
-          <input
-            type="text"
-            placeholder="정답 입력"
-            value={q2}
-            onChange={(e) => setQ2(e.target.value)}
-            style={{ width: "100%", padding: 10, marginTop: 8, marginBottom: 12 }}
-          />
-          <button disabled={q2Busy} type="submit">
-            {q2Busy ? "채점 중..." : "제출"}
-          </button>
-        </form>
-        {q2Res && (
-          <p style={{ marginTop: 10 }}>
-            점수: {q2Res.score} / 1{" "}
-            {q2Res.feedback ? `— ${q2Res.feedback}` : q2Res.score ? "정답" : "오답"}
+        <header style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px 0" }}>
+          <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 6 }}>
+            온라인 실습 교재 — Chapter 1
+          </h1>
+          <p style={{ color: "#555", marginBottom: 8 }}>
+            스크롤하여 한 문제씩 풀어보세요. 직전 문제는 희미하게 보이고, 더 이전은 더 희미합니다.
           </p>
+        </header>
+
+        {loadingProblems ? (
+          <div style={{ height: "80vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            문제를 불러오는 중…
+          </div>
+        ) : problems.length === 0 ? (
+          <div style={{ height: "80vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            등록된 문제가 없습니다.
+          </div>
+        ) : (
+          <main>{Sections}</main>
         )}
-      </section>
-    </main>
+      </div>
+    </>
   );
 }
