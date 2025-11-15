@@ -1,90 +1,153 @@
 "use client";
-import { useEffect, useState } from "react";
-import { supabaseBrowser } from "@/lib/supabase";
 
-type Problem = {
-  id: number;
-  type: "mcq" | "numeric";
-  body: { prompt: string; choices?: string[] };
-};
+import { useState } from "react";
 
-const TEMP_USER = "00000000-0000-0000-0000-000000000001"; // 임시 사용자 ID
+async function grade(problemId: number, answer: string) {
+  const res = await fetch("/api/grade", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ problemId, answer }),
+  });
+  if (!res.ok) throw new Error("grading failed");
+  return res.json() as Promise<{ score: number; feedback?: string }>;
+}
 
 export default function Home() {
-  const [problems, setProblems] = useState<Problem[]>([]);
-  const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [result, setResult] = useState<Record<number, { score: number; feedback?: string }>>({});
+  // Q1: MCQ
+  const [q1, setQ1] = useState<string>("");
+  const [q1Res, setQ1Res] = useState<{ score: number; feedback?: string }>();
+  const [q1Busy, setQ1Busy] = useState(false);
 
-useEffect(() => {
-  (async () => {
-    const res = await fetch("/api/problems", { cache: "no-store" });
-    const json = await res.json();
-    if (json?.problems) setProblems(json.problems);
-  })();
-}, []);
+  // Q2: Numeric
+  const [q2, setQ2] = useState<string>("");
+  const [q2Res, setQ2Res] = useState<{ score: number; feedback?: string }>();
+  const [q2Busy, setQ2Busy] = useState(false);
 
-  const submit = async (pid: number) => {
-    const answer = answers[pid] ?? "";
-    const res = await fetch("/api/grade", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: TEMP_USER, problemId: pid, answer }),
-    });
-    const data = await res.json();
-    setResult((r) => ({ ...r, [pid]: { score: data.score, feedback: data.feedback } }));
+  const submitQ1 = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setQ1Busy(true);
+    try {
+      const r = await grade(1, q1 || "");
+      setQ1Res(r);
+    } finally {
+      setQ1Busy(false);
+    }
   };
 
-<div style={{ position: "fixed", top: 12, right: 12 }}><a href="/login">로그인</a></div>
+  const submitQ2 = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setQ2Busy(true);
+    try {
+      const r = await grade(2, q2 || "");
+      setQ2Res(r);
+    } finally {
+      setQ2Busy(false);
+    }
+  };
 
   return (
-    <main style={{ maxWidth: 720, margin: "40px auto", padding: 16 }}>
-      <h1>온라인 실습 교재 — 샘플</h1>
-      <p>Chapter 1의 샘플 문제 2개로 동작 확인</p>
-      <hr />
-      {problems.map((p) => {
-        const prompt = p.body?.prompt ?? "";
-        const choices = p.body?.choices ?? [];
-        return (
-          <div key={p.id} style={{ border: "1px solid #ddd", padding: 16, borderRadius: 8, marginBottom: 16 }}>
-            <div>
-              <b>Q{p.id}.</b> {prompt}
-            </div>
+    <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
+      {/* 로그인 링크 (우상단 고정) */}
+      <div style={{ position: "fixed", top: 12, right: 12 }}>
+        <a href="/login">로그인</a>
+      </div>
 
-            {p.type === "mcq" ? (
-              <div style={{ marginTop: 8 }}>
-                {choices.map((c, idx) => (
-                  <label key={idx} style={{ display: "block", marginBottom: 4 }}>
-                    <input
-                      type="radio"
-                      name={`q_${p.id}`}
-                      onChange={() =>
-                        setAnswers((a) => ({ ...a, [p.id]: String.fromCharCode(65 + idx) }))
-                      }
-                    />
-                    &nbsp;{String.fromCharCode(65 + idx)}. {c}
-                  </label>
-                ))}
-              </div>
-            ) : (
+      <h1 style={{ fontSize: 40, fontWeight: 800 }}>온라인 실습 교재 — 샘플</h1>
+      <p style={{ marginBottom: 24 }}>Chapter 1의 샘플 문제 2개로 동작 확인</p>
+
+      {/* Q1 */}
+      <section
+        style={{
+          border: "1px solid #666",
+          borderRadius: 8,
+          padding: 16,
+          marginBottom: 24,
+        }}
+      >
+        <h3>Q1. 샤논 용량 공식에서 용량 C의 단위는?</h3>
+        <form onSubmit={submitQ1}>
+          <div style={{ display: "grid", gap: 10, marginTop: 8, marginBottom: 12 }}>
+            <label>
               <input
-                style={{ width: "100%", marginTop: 8 }}
-                placeholder="정답 입력"
-                onChange={(e) => setAnswers((a) => ({ ...a, [p.id]: e.target.value }))}
-              />
-            )}
-
-            <button style={{ marginTop: 8 }} onClick={() => submit(p.id)}>
-              제출
-            </button>
-            {result[p.id] && (
-              <div style={{ marginTop: 8 }}>
-                <b>점수:</b> {result[p.id].score} / 1 &nbsp; <i>{result[p.id].feedback}</i>
-              </div>
-            )}
+                type="radio"
+                name="q1"
+                value="A"
+                checked={q1 === "A"}
+                onChange={(e) => setQ1(e.target.value)}
+              />{" "}
+              A. bps
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="q1"
+                value="B"
+                checked={q1 === "B"}
+                onChange={(e) => setQ1(e.target.value)}
+              />{" "}
+              B. Hz
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="q1"
+                value="C"
+                checked={q1 === "C"}
+                onChange={(e) => setQ1(e.target.value)}
+              />{" "}
+              C. dB
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="q1"
+                value="D"
+                checked={q1 === "D"}
+                onChange={(e) => setQ1(e.target.value)}
+              />{" "}
+              D. W
+            </label>
           </div>
-        );
-      })}
+          <button disabled={q1Busy} type="submit">
+            {q1Busy ? "채점 중..." : "제출"}
+          </button>
+        </form>
+        {q1Res && (
+          <p style={{ marginTop: 10 }}>
+            점수: {q1Res.score} / 1{" "}
+            {q1Res.feedback ? `— ${q1Res.feedback}` : q1Res.score ? "정답" : "오답"}
+          </p>
+        )}
+      </section>
+
+      {/* Q2 */}
+      <section
+        style={{
+          border: "1px solid #666",
+          borderRadius: 8,
+          padding: 16,
+        }}
+      >
+        <h3>Q2. π 값을 소수 둘째자리까지 반올림하여 입력하세요.</h3>
+        <form onSubmit={submitQ2}>
+          <input
+            type="text"
+            placeholder="정답 입력"
+            value={q2}
+            onChange={(e) => setQ2(e.target.value)}
+            style={{ width: "100%", padding: 10, marginTop: 8, marginBottom: 12 }}
+          />
+          <button disabled={q2Busy} type="submit">
+            {q2Busy ? "채점 중..." : "제출"}
+          </button>
+        </form>
+        {q2Res && (
+          <p style={{ marginTop: 10 }}>
+            점수: {q2Res.score} / 1{" "}
+            {q2Res.feedback ? `— ${q2Res.feedback}` : q2Res.score ? "정답" : "오답"}
+          </p>
+        )}
+      </section>
     </main>
   );
 }
-
