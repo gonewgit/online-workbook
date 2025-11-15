@@ -34,6 +34,8 @@ useEffect(() => {
     setResult((r) => ({ ...r, [pid]: { score: data.score, feedback: data.feedback } }));
   };
 
+<div style={{ position: "fixed", top: 12, right: 12 }}><a href="/login">로그인</a></div>
+
   return (
     <main style={{ maxWidth: 720, margin: "40px auto", padding: 16 }}>
       <h1>온라인 실습 교재 — 샘플</h1>
