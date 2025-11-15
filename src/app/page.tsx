@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
 
-// ---------- 공통: 채점 호출 ----------
+// ---------- 채점 호출 ----------
 async function grade(problemId: number, answer: string) {
   const res = await fetch("/api/grade", {
     method: "POST",
@@ -15,33 +15,50 @@ async function grade(problemId: number, answer: string) {
 }
 
 export default function Home() {
-  // 로그인 상태
+  // 로그인/수강권 상태
   const [loading, setLoading] = useState(true);
   const [isAuthed, setIsAuthed] = useState(false);
+  const [isEntitled, setIsEntitled] = useState<boolean | null>(null); // null=확인 전
 
-  // Q1: MCQ
+  // Q1
   const [q1, setQ1] = useState<string>("");
   const [q1Res, setQ1Res] = useState<{ score: number; feedback?: string }>();
   const [q1Busy, setQ1Busy] = useState(false);
 
-  // Q2: Numeric
+  // Q2
   const [q2, setQ2] = useState<string>("");
   const [q2Res, setQ2Res] = useState<{ score: number; feedback?: string }>();
   const [q2Busy, setQ2Busy] = useState(false);
 
-  // 로그인 상태 확인
+  // 로그인/수강권 확인
   useEffect(() => {
     const sb = supabaseBrowser();
 
-    // 최초 세션
-    sb.auth.getSession().then(({ data }) => {
-      setIsAuthed(!!data.session);
-      setLoading(false);
-    });
+    (async () => {
+      const { data } = await sb.auth.getSession();
+      const authed = !!data.session;
+      setIsAuthed(authed);
 
-    // 실시간 상태 변경 반영
-    const { data: sub } = sb.auth.onAuthStateChange((_event, session) => {
+      if (authed) {
+        // RLS가 적용되어 있으므로 본인 수강권만 보입니다.
+        const { data: ent, error } = await sb
+          .from("entitlements")
+          .select("user_id")
+          .eq("chapter_id", 1)
+          .maybeSingle();
+        setIsEntitled(!error && !!ent);
+      } else {
+        setIsEntitled(null);
+      }
+
+      setLoading(false);
+    })();
+
+    const { data: sub } = sb.auth.onAuthStateChange((_e, session) => {
       setIsAuthed(!!session);
+      if (!session) {
+        setIsEntitled(null);
+      }
     });
     return () => {
       sub.subscription.unsubscribe();
@@ -70,7 +87,6 @@ export default function Home() {
     }
   };
 
-  // 상단 고정 링크
   const TopRight = () => (
     <div style={{ position: "fixed", top: 12, right: 12 }}>
       {isAuthed ? (
@@ -90,6 +106,7 @@ export default function Home() {
     </div>
   );
 
+  // 상태별 화면 분기
   if (loading) {
     return (
       <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
@@ -99,7 +116,6 @@ export default function Home() {
     );
   }
 
-  // 로그인 안 된 경우: 문제 가림막
   if (!isAuthed) {
     return (
       <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
@@ -115,11 +131,25 @@ export default function Home() {
     );
   }
 
-  // 로그인된 경우: 문제 표시
+  if (isEntitled === false) {
+    return (
+      <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
+        <TopRight />
+        <h1 style={{ fontSize: 40, fontWeight: 800 }}>수강권이 필요합니다</h1>
+        <p style={{ marginTop: 12 }}>
+          현재 계정에는 <b>Chapter 1</b>에 대한 수강권이 없습니다.
+        </p>
+        <p style={{ marginTop: 8 }}>
+          결제 후 자동으로 권한이 부여됩니다. (테스트용으로는 관리자에서 부여 가능)
+        </p>
+      </main>
+    );
+  }
+
+  // 로그인 + 수강권 OK → 문제 표시
   return (
     <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
       <TopRight />
-
       <h1 style={{ fontSize: 40, fontWeight: 800 }}>온라인 실습 교재 — 샘플</h1>
       <p style={{ marginBottom: 24 }}>Chapter 1의 샘플 문제 2개로 동작 확인</p>
 
@@ -135,46 +165,21 @@ export default function Home() {
         <h3>Q1. 샤논 용량 공식에서 용량 C의 단위는?</h3>
         <form onSubmit={submitQ1}>
           <div style={{ display: "grid", gap: 10, marginTop: 8, marginBottom: 12 }}>
-            <label>
-              <input
-                type="radio"
-                name="q1"
-                value="A"
-                checked={q1 === "A"}
-                onChange={(e) => setQ1(e.target.value)}
-              />{" "}
-              A. bps
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="q1"
-                value="B"
-                checked={q1 === "B"}
-                onChange={(e) => setQ1(e.target.value)}
-              />{" "}
-              B. Hz
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="q1"
-                value="C"
-                checked={q1 === "C"}
-                onChange={(e) => setQ1(e.target.value)}
-              />{" "}
-              C. dB
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="q1"
-                value="D"
-                checked={q1 === "D"}
-                onChange={(e) => setQ1(e.target.value)}
-              />{" "}
-              D. W
-            </label>
+            {["A. bps", "B. Hz", "C. dB", "D. W"].map((label, i) => {
+              const val = String.fromCharCode(65 + i);
+              return (
+                <label key={val}>
+                  <input
+                    type="radio"
+                    name="q1"
+                    value={val}
+                    checked={q1 === val}
+                    onChange={(e) => setQ1(e.target.value)}
+                  />{" "}
+                  {label}
+                </label>
+              );
+            })}
           </div>
           <button disabled={q1Busy} type="submit">
             {q1Busy ? "채점 중..." : "제출"}
