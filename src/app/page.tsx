@@ -6,7 +6,7 @@ import { supabaseBrowser } from "@/lib/supabase";
 type Problem = {
   id: number;
   chapter_id: number;
-  type: string;          // 'short' | 'essay' | 'mcq' ...
+  type: string;          // 'short' | 'essay' | 'mcq' | 'numeric'
   body: string;
   grading_mode?: string; // 'short' | 'essay' | 'numeric' | 'mcq'
 };
@@ -38,9 +38,9 @@ export default function Home() {
   const [grading, setGrading] = useState<Record<number, boolean>>({});
   const [results, setResults] = useState<Record<number, GradeRes>>({});
 
-  // 현재 뷰 인덱스(스냅 섹션 관찰)
+  // 현재 뷰 인덱스
   const [activeIdx, setActiveIdx] = useState(0);
-  const sectionRefs = useRef<(HTMLElement | null)[]>([]);
+  const sectionRefs = useRef<(HTMLElement | null)[]>([]); // ✅ 타입 명시
 
   // -------------- 로그인 & 수강권 확인 --------------
   useEffect(() => {
@@ -92,7 +92,6 @@ export default function Home() {
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
-        // 가장 많이 보이는 섹션을 active로
         const vis = entries
           .filter((e) => e.isIntersecting)
           .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
@@ -178,23 +177,21 @@ export default function Home() {
 
   // 스타일 헬퍼: 이전 카드의 희미도/그라데이션
   const cardStyle = (idx: number): React.CSSProperties => {
-    // 현재보다 2개 이상 이전: 매우 희미
     if (idx < activeIdx - 1) {
+      // 현재보다 2개 이상 이전: 더 희미
       return {
         opacity: 0.18,
         filter: "grayscale(60%)",
         transition: "opacity 200ms ease, filter 200ms ease",
       };
     }
-    // 바로 직전 카드: 옅게 + 그라데이션
     if (idx === activeIdx - 1) {
+      // 바로 직전 카드: 옅게 + 그라데이션
       return {
         position: "relative",
         opacity: 0.45,
         filter: "grayscale(30%)",
         transition: "opacity 200ms ease, filter 200ms ease",
-        // 아래에서 위로 희미해지는 느낌
-        // (오버레이는 섹션 컨테이너에 before로 추가하는 대신 배경그라데이션으로 표현)
         background:
           "linear-gradient(to bottom, rgba(255,255,255,0.0) 0%, rgba(255,255,255,0.7) 60%, rgba(255,255,255,0.9) 100%)",
       };
@@ -218,7 +215,7 @@ export default function Home() {
         />
       );
     }
-    // 기본: 단답형
+    // 기본: 단답형/숫자형
     return (
       <input
         type="text"
@@ -236,7 +233,10 @@ export default function Home() {
         <section
           key={p.id}
           data-index={i}
-          ref={(el) => (sectionRefs.current[i] = el)}
+          ref={(el: HTMLElement | null) => {
+            // ✅ ref 콜백은 반드시 void를 반환하도록 블록 사용
+            sectionRefs.current[i] = el;
+          }}
           style={{
             scrollSnapAlign: "start",
             minHeight: "100vh",
