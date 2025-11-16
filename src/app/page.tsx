@@ -7,7 +7,7 @@ type Problem = {
   id: number;
   chapter_id: number;
   type: string;          // 'short' | 'essay' | 'mcq' | 'numeric'
-  body: string;
+  body: any;             // string or JSON {prompt, choices?, placeholder?}
   grading_mode?: string; // 'short' | 'essay' | 'numeric' | 'mcq'
 };
 
@@ -23,34 +23,50 @@ async function grade(problemId: number, answer: string) {
   return (await res.json()) as GradeRes;
 }
 
+function parseBody(b: any): { prompt: string; choices: string[] | null; placeholder?: string } {
+  try {
+    if (typeof b === "string") return { prompt: b, choices: null };
+    if (b && typeof b === "object") {
+      const prompt = typeof b.prompt === "string" ? b.prompt : JSON.stringify(b);
+      const choices = Array.isArray(b.choices) ? (b.choices as string[]) : null;
+      const placeholder = typeof b.placeholder === "string" ? b.placeholder : undefined;
+      return { prompt, choices, placeholder };
+    }
+    return { prompt: String(b ?? ""), choices: null };
+  } catch {
+    return { prompt: String(b ?? ""), choices: null };
+  }
+}
+
 export default function Home() {
-  // 로그인/권한
+  // 인증 / 권한
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [isAuthed, setIsAuthed] = useState(false);
   const [isEntitled, setIsEntitled] = useState<boolean | null>(null);
 
-  // 문제
+  // 문제 목록
   const [problems, setProblems] = useState<Problem[]>([]);
   const [loadingProblems, setLoadingProblems] = useState(true);
 
-  // 답안/결과 상태
+  // 답안/채점
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [grading, setGrading] = useState<Record<number, boolean>>({});
   const [results, setResults] = useState<Record<number, GradeRes>>({});
 
-  // 현재 뷰 인덱스
-  const [activeIdx, setActiveIdx] = useState(0);
-  const sectionRefs = useRef<(HTMLElement | null)[]>([]); // ✅ 타입 명시
+  // 언락된 마지막 문제 인덱스 (처음엔 0번만 보이게)
+  const [unlockedIdx, setUnlockedIdx] = useState(0);
 
-  // -------------- 로그인 & 수강권 확인 --------------
+  // 스크롤/섹션 참조
+  const sectionRefs = useRef<(HTMLElement | null)[]>([]);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+
+  // ---------- 인증/권한 ----------
   useEffect(() => {
     const sb = supabaseBrowser();
-
     (async () => {
       const { data } = await sb.auth.getSession();
       const authed = !!data.session;
       setIsAuthed(authed);
-
       if (authed) {
         const { data: ent, error } = await sb
           .from("entitlements")
@@ -72,7 +88,7 @@ export default function Home() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // -------------- 문제 불러오기 --------------
+  // ---------- 문제 로드 ----------
   useEffect(() => {
     const load = async () => {
       try {
@@ -81,6 +97,8 @@ export default function Home() {
         if (!res.ok) throw new Error("failed to load problems");
         const data = (await res.json()) as Problem[];
         setProblems(data);
+        // 처음 진입 시 0번만 열어두기
+        setUnlockedIdx(0);
       } finally {
         setLoadingProblems(false);
       }
@@ -88,25 +106,7 @@ export default function Home() {
     load();
   }, []);
 
-  // -------------- 인터섹션으로 현재 섹션 감지 --------------
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const vis = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
-        if (vis[0]) {
-          const idx = Number((vis[0].target as HTMLElement).dataset.index || "0");
-          setActiveIdx(idx);
-        }
-      },
-      { threshold: [0.25, 0.5, 0.75, 0.9] }
-    );
-
-    sectionRefs.current.forEach((el) => el && observer.observe(el));
-    return () => observer.disconnect();
-  }, [problems.length]);
-
+  // ---------- 상태별 화면 ----------
   const TopRight = () => (
     <div style={{ position: "fixed", top: 12, right: 12, zIndex: 50 }}>
       {isAuthed ? (
@@ -126,7 +126,6 @@ export default function Home() {
     </div>
   );
 
-  // ------------ 상태별 가림막 ------------
   if (loadingAuth) {
     return (
       <main style={{ maxWidth: 900, margin: "32px auto", padding: 16 }}>
@@ -162,64 +161,51 @@ export default function Home() {
     );
   }
 
-  // ------------ 문제 카드 렌더 ------------
-  const onSubmit = async (e: React.FormEvent, p: Problem) => {
-    e.preventDefault();
-    const ans = answers[p.id] ?? "";
-    setGrading((g) => ({ ...g, [p.id]: true }));
-    try {
-      const res = await grade(p.id, ans);
-      setResults((r) => ({ ...r, [p.id]: res }));
-    } finally {
-      setGrading((g) => ({ ...g, [p.id]: false }));
-    }
-  };
-
-  // 스타일 헬퍼: 이전 카드의 희미도/그라데이션
-  const cardStyle = (idx: number): React.CSSProperties => {
-    if (idx < activeIdx - 1) {
-      // 현재보다 2개 이상 이전: 더 희미
-      return {
-        opacity: 0.18,
-        filter: "grayscale(60%)",
-        transition: "opacity 200ms ease, filter 200ms ease",
-      };
-    }
-    if (idx === activeIdx - 1) {
-      // 바로 직전 카드: 옅게 + 그라데이션
-      return {
-        position: "relative",
-        opacity: 0.45,
-        filter: "grayscale(30%)",
-        transition: "opacity 200ms ease, filter 200ms ease",
-        background:
-          "linear-gradient(to bottom, rgba(255,255,255,0.0) 0%, rgba(255,255,255,0.7) 60%, rgba(255,255,255,0.9) 100%)",
-      };
-    }
-    // 현재/이후: 선명
-    return { opacity: 1, filter: "none", transition: "opacity 200ms ease" };
-  };
-
+  // ---------- 입력 UI ----------
   const inputFor = (p: Problem) => {
     const mode = (p.grading_mode || p.type || "short").toLowerCase();
+    const { choices, placeholder } = parseBody(p.body);
     const val = answers[p.id] ?? "";
     const set = (v: string) => setAnswers((a) => ({ ...a, [p.id]: v }));
+
+    if (mode === "mcq" && choices && choices.length > 0) {
+      return (
+        <div style={{ display: "grid", gap: 8 }}>
+          {choices.map((label, idx) => {
+            const opt = String.fromCharCode(65 + idx); // A,B,C,...
+            const checked = val === opt || val === label;
+            return (
+              <label key={idx} style={{ cursor: "pointer" }}>
+                <input
+                  type="radio"
+                  name={`mcq-${p.id}`}
+                  value={opt}
+                  checked={checked}
+                  onChange={(e) => set(e.target.value)}
+                />{" "}
+                {label}
+              </label>
+            );
+          })}
+        </div>
+      );
+    }
 
     if (mode === "essay") {
       return (
         <textarea
-          placeholder="서술형 답안을 입력하세요"
+          placeholder={placeholder || "서술형 답안을 입력하세요"}
           value={val}
           onChange={(e) => set(e.target.value)}
-          style={{ width: "100%", minHeight: 140, padding: 12 }}
+          style={{ width: "100%", minHeight: 160, padding: 12 }}
         />
       );
     }
-    // 기본: 단답형/숫자형
+
     return (
       <input
         type="text"
-        placeholder="답안을 입력하세요"
+        placeholder={placeholder || "답안을 입력하세요"}
         value={val}
         onChange={(e) => set(e.target.value)}
         style={{ width: "100%", padding: 10 }}
@@ -227,78 +213,119 @@ export default function Home() {
     );
   };
 
+  // ---------- 제출 로직: 정답이면 다음 문제 언락 + 스크롤 ----------
+  const onSubmit = async (e: React.FormEvent, p: Problem, indexInView: number) => {
+    e.preventDefault();
+    const ans = answers[p.id] ?? "";
+    setGrading((g) => ({ ...g, [p.id]: true }));
+    try {
+      const res = await grade(p.id, ans);
+      setResults((r) => ({ ...r, [p.id]: res }));
+
+      // 정답이면 다음 문제 언락
+      if (res.score && res.score > 0) {
+        setUnlockedIdx((prev) => {
+          const next = Math.min((problems.length || 1) - 1, Math.max(prev, indexInView + 1));
+          // 스크롤을 다음 섹션으로 이동
+          setTimeout(() => {
+            const target = sectionRefs.current[next];
+            target?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }, 50);
+          return next;
+        });
+      }
+    } finally {
+      setGrading((g) => ({ ...g, [p.id]: false }));
+    }
+  };
+
+  // ---------- 렌더: 현재까지 언락된 문제까지만 표시 ----------
+  const renderable = useMemo(() => {
+    if (problems.length === 0) return [];
+    const end = Math.min(unlockedIdx + 1, problems.length); // 현재까지
+    return problems.slice(0, end);
+  }, [problems, unlockedIdx]);
+
   const Sections = useMemo(
     () =>
-      problems.map((p, i) => (
-        <section
-          key={p.id}
-          data-index={i}
-          ref={(el: HTMLElement | null) => {
-            // ✅ ref 콜백은 반드시 void를 반환하도록 블록 사용
-            sectionRefs.current[i] = el;
-          }}
-          style={{
-            scrollSnapAlign: "start",
-            minHeight: "100vh",
-            display: "flex",
-            alignItems: "center",
-            padding: "48px 16px",
-          }}
-        >
-          <div
+      renderable.map((p, i) => {
+        const { prompt } = parseBody(p.body);
+        return (
+          <section
+            key={p.id}
+            ref={(el: HTMLElement | null) => {
+              sectionRefs.current[i] = el;
+            }}
             style={{
-              ...cardStyle(i),
-              maxWidth: 900,
-              width: "100%",
-              margin: "0 auto",
-              border: "1px solid #666",
-              borderRadius: 12,
-              padding: 20,
-              background: "white",
-              boxShadow: "0 6px 24px rgba(0,0,0,0.08)",
+              // 한 화면 = 한 카드
+              scrollSnapAlign: "start",
+              minHeight: "100%", // viewport 높이와 동일하게 보장 (container가 100vh)
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "24px 16px",
             }}
           >
-            <div style={{ marginBottom: 10, fontSize: 13, color: "#666" }}>
-              문제 {i + 1} / {problems.length} · ID {p.id}
-            </div>
-            <h3
+            <div
               style={{
-                fontSize: 20,
-                fontWeight: 700,
-                marginBottom: 12,
-                lineHeight: 1.35,
+                maxWidth: 900,
+                width: "100%",
+                // 카드 높이를 일정하게 유지 (여유 있는 고정 높이)
+                height: 520,
+                overflow: "auto",
+                border: "1px solid #666",
+                borderRadius: 12,
+                padding: 20,
+                background: "white",
+                boxShadow: "0 6px 24px rgba(0,0,0,0.08)",
               }}
-              dangerouslySetInnerHTML={{
-                __html: p.body.replace(/\n/g, "<br/>"),
-              }}
-            />
-            <form onSubmit={(e) => onSubmit(e, p)}>
-              <div style={{ margin: "8px 0 12px" }}>{inputFor(p)}</div>
-              <button disabled={!!grading[p.id]} type="submit" style={{ padding: "8px 12px" }}>
-                {grading[p.id] ? "채점 중..." : "제출"}
-              </button>
-            </form>
-            {results[p.id] && (
-              <p style={{ marginTop: 10 }}>
-                점수: {results[p.id].score} / 1{" "}
-                {results[p.id].feedback
-                  ? `— ${results[p.id].feedback}`
-                  : results[p.id].score
-                  ? "정답"
-                  : "오답"}
-              </p>
-            )}
-          </div>
-        </section>
-      )),
-    [problems, grading, results, activeIdx, answers]
+            >
+              <div style={{ marginBottom: 10, fontSize: 13, color: "#666" }}>
+                문제 {i + 1} / {problems.length} · ID {p.id}
+              </div>
+              <h3
+                style={{
+                  fontSize: 20,
+                  fontWeight: 700,
+                  marginBottom: 12,
+                  lineHeight: 1.35,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {prompt}
+              </h3>
+
+              <form onSubmit={(e) => onSubmit(e, p, i)}>
+                <div style={{ margin: "8px 0 12px" }}>{inputFor(p)}</div>
+                <button disabled={!!grading[p.id]} type="submit" style={{ padding: "8px 12px" }}>
+                  {grading[p.id] ? "채점 중..." : "제출"}
+                </button>
+              </form>
+
+              {results[p.id] && (
+                <p style={{ marginTop: 10 }}>
+                  점수: {results[p.id].score} / 1{" "}
+                  {results[p.id].feedback
+                    ? `— ${results[p.id].feedback}`
+                    : results[p.id].score
+                    ? "정답"
+                    : "오답"}
+                </p>
+              )}
+            </div>
+          </section>
+        );
+      }),
+    [renderable, grading, results, answers]
   );
 
   return (
     <>
       <TopRight />
       <div
+        ref={viewportRef}
         style={{
+          // 고정 뷰포트: 한 화면에 한 카드만
           height: "100vh",
           overflowY: "auto",
           scrollSnapType: "y mandatory",
@@ -310,7 +337,7 @@ export default function Home() {
             온라인 실습 교재 — Chapter 1
           </h1>
           <p style={{ color: "#555", marginBottom: 8 }}>
-            스크롤하여 한 문제씩 풀어보세요. 직전 문제는 희미하게 보이고, 더 이전은 더 희미합니다.
+            스크롤은 현재 문제까지만 가능하며, 정답을 제출하면 다음 문제가 열립니다.
           </p>
         </header>
 
